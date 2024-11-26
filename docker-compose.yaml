@@ -1,0 +1,16 @@
+version: '3.9'
+
+services:
+  app:
+    image: node:20.16.0
+    working_dir: /opt/sample-web-rtc-js
+    hostname: app_server
+    tty: true
+    ports:
+      - '3000:3000'
+    volumes:
+        - ./:/opt/sample-web-rtc-js
+    command: >
+        bash -c "npm install &&
+        npm install nodemon -g &&
+        nodemon app/server.js"
