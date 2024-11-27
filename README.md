@@ -12,10 +12,17 @@ A Sample app for WebRTC on js using socket.io
 - Use Trickle ICE for checking connectivity using TURN servers
 
 ## Setup
-To run this app, you can run bellow command
+To run this app, you can run bellow command.
 ```
 docker compose up
 ```
+
+Then, access bellow URL on any Web Browser ( Such as Chrome ).
+```
+http://localhost:3000
+```
+
+To experience group chat, you may open above URL by multiple window or tab.
 
 To stop this app, you can run bellow hotkey on the terminal window where this app is running.
 ```
