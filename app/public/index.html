@@ -1,38 +1,348 @@
 <html lang="en">
   <head>
-    <script src="/socket.io/socket.io.js"></script>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Sample WebRTC</title>
   </head>
   <body>
-    <ul id="messages">
-    </ul>
+    <h1>Sample WebRTC</h1>
+    <div>
+      <p id="user"></p>
+    </div>
+    <h2>投稿一覧</h2>
+    <div>
+      <ul id="messages"></ul>
+    </div>
+    <h2>メッセージ投稿</h2>
     <form id="form">
-      <input type="text" name="input" id="input" />
-      <input type="submit" value="送信" />
+      <div>
+        <textarea type="text" name="input" id="input" cols="40" rows="2"></textarea>
+      </div>
+      <div>
+        <input type="submit" value="送信" />
+      </div>
     </form>
+    <h2>接続ステータス</h2>
+    <ul id="status"></ul>
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dayjs@1/dayjs.min.js"></script>
     <script>
-      const socket = io();
+      // ******************
+      // Credit1: https://socket.io/docs/v4/tutorial/introduction
+      // Credit2: https://ja.tech.jar.jp/webrtc/datachannel.html
+      // Credit3: https://developer.mozilla.org/en-US/docs/Web/API/RTCPeerConnection
+      // ******************
 
+      // ユーザーIDの決定
+      const userId = sessionStorage.getItem("userId") ?? self.crypto.randomUUID().slice(0, 5);
+      sessionStorage.setItem("userId", userId);
+      console.log("User ID:", userId);
+      document.getElementById("user").textContent = `My User ID: ${userId}`;
+
+      // 設定情報
+      const PEER_CONNECTION_CONFIG = {
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+      };
+      const DATA_CHANNEL_OPTIONS = {
+        ordered: false,
+      };
+
+      // 接続ユーザー毎にPeer接続を保持
+      const peerConnections = {};
+
+      // ソケット接続
+      const socket = io("localhost:3000", {
+        query: {
+          userId: userId,
+        },
+      });
+
+      // メッセージ投稿フォームの要素
       const form = document.getElementById("form");
+
+      // テキストエリアの要素
       const input = document.getElementById("input");
-      const messages = document.getElementById('messages');
+
+      // メッセージ投稿一覧の要素
+      const messages = document.getElementById("messages");
+
+      // Socketに新規ユーザが繋がると飛んでくるイベント
+      socket.on("join", (joinUserId) => {
+        // 新規ユーザーにコネクション開始のイベントを投げる
+        socket.emit("start_connection", userId, joinUserId);
+      });
+
+      // 既存ユーザーがコネクション開始のイベントを受け取ったら、新規ユーザーとのWebRTC接続処理を開始する
+      socket.on("start_connection", (userId, opponentUserId) => {
+        const id = [userId, opponentUserId].sort((a, b) => a > b).join("-");
+
+        // 既存の接続情報があれば一度閉じる
+        if (peerConnections.hasOwnProperty(id)) {
+          peerConnections[id].dc.close();
+          peerConnections[id].pc.close();
+        }
+
+        // ピア接続開始
+        startPeerConnection(id, opponentUserId);
+      });
+
+      // Offer SDP 受信時の処理
+      socket.on("offer_sdp", (msg) => {
+        console.log("Received Offer:", msg.id);
+        const id = msg.id;
+
+        // Offer SDP を受信したら、新規にRTCPeerConnectionインスタンスを生成するが、
+        // 既存のものがあればcloseしておく
+        if (peerConnections.hasOwnProperty(id)) {
+          peerConnections[id].dc.close();
+          peerConnections[id].pc.close();
+        }
+
+        // 新規にRTCPeerConnectionインスタンスを生成
+        // Data Channelは後で設定するのでここではnullとしておく
+        peerConnections[id] = {
+          pc: createPeerConnection(id, msg.opponentUserId),
+          dc: null,
+        };
+
+        // 受信した Offer は setRemoteDescription()する
+        const offer = new RTCSessionDescription({
+          type: "offer",
+          sdp: msg.data,
+        });
+        peerConnections[id].pc
+          .setRemoteDescription(offer)
+          .then(function () {
+            console.log("setRemoteDescription() succeeded.");
+          })
+          .catch(function (err) {
+            console.error("setRemoteDescription() failed.", err);
+          });
+
+          // Answer を生成して setLocalDescription() する
+        peerConnections[id].pc
+          .createAnswer()
+          .then(function (sessionDescription) {
+            console.log("createAnswer() succeeded.");
+            return peerConnections[id].pc.setLocalDescription(
+              sessionDescription
+            );
+          })
+          .then(function () {
+            // setLocalDescription() が成功した場合
+            // Trickle ICE ではここで SDP を相手に通知する
+            socket.emit(
+              "answer_sdp",
+              peerConnections[id].pc.localDescription.sdp,
+              id,
+              msg.userId,
+              msg.opponentUserId
+            );
+            console.log("setLocalDescription() succeeded.");
+          })
+          .catch(function (err) {
+            console.error("setLocalDescription() failed.", err);
+          });
+        document.getElementById(id).textContent = "answer created: " + id;
+      });
+
+      // Answer SDP 受信時の処理
+      socket.on("answer_sdp", (msg) => {
+        console.log("Received Answer:", msg.id);
+
+        const id = msg.id;
+
+        const answer = new RTCSessionDescription({
+          type: "answer",
+          sdp: msg.data,
+        });
+        peerConnections[id].pc
+          .setRemoteDescription(answer)
+          .then(function () {
+            console.log("setRemoteDescription() succeeded.");
+          })
+          .catch(function (err) {
+            console.error("setRemoteDescription() failed.", err);
+          });
+      });
+
+      socket.on("ice_candidate", (msg) => {
+        console.log("Received Ice Candidate:", msg.id);
+
+        const id = msg.id;
+
+        peerConnections[id].pc.addIceCandidate(msg.data);
+      });
+
+      function createPeerConnection(id, opponentUserId) {
+        if (!document.getElementById(id)) {
+          const item = document.createElement("li");
+          item.id = id;
+          document.getElementById("status").appendChild(item);
+        }
+
+        let pc = new RTCPeerConnection(PEER_CONNECTION_CONFIG);
+
+        // ICE candidate 取得時のイベントハンドラを登録
+        pc.onicecandidate = function (evt) {
+          if (evt.candidate) {
+            // 一部の ICE candidate を取得
+            // Trickle ICE では ICE candidate を相手に通知する
+            socket.emit(
+              "ice_candidate",
+              evt.candidate,
+              id,
+              userId,
+              opponentUserId
+            );
+
+            console.log("Collecting ICE candidates");
+            document.getElementById(id).textContent =
+              "Collecting ICE candidates: " + id;
+          } else {
+            document.getElementById(id).textContent = "ready: " + id;
+          }
+        };
+
+        pc.onconnectionstatechange = function (evt) {
+          console.log(pc.connectionState, id);
+
+          switch (pc.connectionState) {
+            case "connected":
+              document.getElementById(id).textContent = "connected: " + id;
+              break;
+            case "disconnected":
+            case "failed":
+              if (document.getElementById(id)) {
+                document.getElementById(id).textContent = "disconnected: " + id;
+                document.getElementById(id).remove();
+              }
+              delete peerConnections[id];
+              break;
+            case "closed":
+              if (document.getElementById(id)) {
+                document.getElementById(id).textContent = "closed: " + id;
+                document.getElementById(id).remove();
+              }
+              delete peerConnections[id];
+              break;
+          }
+        };
+
+        pc.ondatachannel = function (evt) {
+          console.log("Data channel created:", evt);
+          setupDataChannel(evt.channel, id);
+          peerConnections[id].dc = evt.channel;
+        };
+
+        return pc;
+      }
 
       form.addEventListener("submit", (e) => {
         e.preventDefault();
-        if (input.value) {
-          socket.emit("chat message", input.value);
-          input.value = "";
+
+        if (!input.value) {
+          return;
         }
+
+        const item = document.createElement("li");
+        item.textContent = `${dayjs().format("YYYY-MM-DD HH:mm")}: me> ${
+          input.value
+        }`;
+        messages.appendChild(item);
+        for (const id in peerConnections) {
+          if (
+            !peerConnections[id].pc ||
+            peerConnections[id].pc.connectionState != "connected"
+          ) {
+            console.log("PeerConnection is not established.");
+            continue;
+          }
+
+          if (peerConnections[id].dc.readyState != 'open') {
+            console.log("DataChannel is not open.");
+            continue;
+          }
+
+          peerConnections[id].dc.send(JSON.stringify({
+            message: input.value,
+            userId: userId
+          }));
+        }
+        input.value = "";
       });
 
-      socket.on('chat message', (msg) => {
-        const item = document.createElement('li');
-        item.textContent = msg.data;
-        messages.appendChild(item);
-        window.scrollTo(0, document.body.scrollHeight);
-      });
+      function startPeerConnection(id, opponentUserId) {
+        console.log("startPeerConnection:", id);
+        peerConnections[id] = {
+          pc: null,
+          dc: null,
+        };
+
+        const peerConnection = createPeerConnection(id, opponentUserId);
+
+        // Data channel を生成
+        const dataChannel = peerConnection.createDataChannel(
+          "test-data-channel",
+          DATA_CHANNEL_OPTIONS
+        );
+        setupDataChannel(dataChannel, id);
+
+        // Offer を生成する
+        peerConnection
+          .createOffer()
+          .then(function (sessionDescription) {
+            console.log("createOffer() succeeded.");
+
+            return peerConnection.setLocalDescription(sessionDescription);
+          })
+          .then(function () {
+            // setLocalDescription() が成功した場合
+            // Trickle ICE ではここで SDP を相手に通知する
+            socket.emit(
+              "offer_sdp",
+              peerConnection.localDescription.sdp,
+              id,
+              userId,
+              opponentUserId
+            );
+
+            console.log("setLocalDescription() succeeded.");
+          })
+          .catch(function (err) {
+            console.error("setLocalDescription() failed.", err);
+          });
+
+        document.getElementById(id).textContent = "offer created: " + id;
+
+        peerConnections[id] = {
+          pc: peerConnection,
+          dc: dataChannel,
+        };
+      }
+
+      // Data channel のイベントハンドラを定義する
+      function setupDataChannel(dc, id) {
+        dc.onerror = function (error) {
+          console.log("Data channel error:", error);
+        };
+        dc.onmessage = function (evt) {
+          console.log("Data channel message:", evt.data);
+          const msg = JSON.parse(evt.data);
+          const item = document.createElement("li");
+          item.textContent = `${dayjs().format(
+            "YYYY-MM-DD HH:mm"
+          )}: ${msg.userId}> ${msg.message}`;
+          messages.appendChild(item);
+          window.scrollTo(0, document.body.scrollHeight);
+        };
+        dc.onopen = function (evt) {
+          console.log("Data channel opened:", evt);
+        };
+        dc.onclose = function () {
+          console.log("Data channel closed.");
+        };
+      }
     </script>
   </body>
 </html>

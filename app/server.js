@@ -9,14 +9,48 @@ const io = new Server(server);
 app.use(express.static('app/public'));
 
 io.on('connection', (socket) => {
-  console.log('a user connected');
+  const userId = socket.handshake.query.userId;
+  console.log('a user connected:', userId);
 
-  socket.join('sample room');
+  socket.join('room_a');
+  socket.join(`user:${userId}`);
 
-  socket.on('chat message', (msg) => {
-    console.log('message: ' + msg);
-    io.to('sample room').emit('chat message', {
-      data: msg
+  socket.broadcast.to('room_a').emit('join', userId);
+
+  socket.on('start_connection', (userId, joinUserId) => {
+    socket.join(`user: ${joinUserId}`);
+
+    console.log('Start Connection');
+    socket.broadcast.to(`user:${joinUserId}`).emit('start_connection', joinUserId, userId);
+  });
+
+  socket.on('offer_sdp', (msg, id, userId, opponentUserId) => {
+    console.log('Offer SDP: ' + msg);
+    socket.broadcast.to(`user:${opponentUserId}`).emit('offer_sdp', {
+      data: msg,
+      id: id,
+      userId: opponentUserId,
+      opponentUserId: userId
+    });
+  });
+
+  socket.on('answer_sdp', (msg, id, userId, opponentUserId) => {
+    console.log('Answer SDP: ' + msg);
+    socket.broadcast.to(`user:${opponentUserId}`).emit('answer_sdp', {
+      data: msg,
+      id: id,
+      userId: opponentUserId,
+      opponentUserId: userId
+    });
+  });
+
+  socket.on('ice_candidate', (msg, id, userId, opponentUserId) => {
+    console.log('Ice Candidate: ' + msg);
+    socket.broadcast.to(`user:${opponentUserId}`).emit('ice_candidate', {
+      data: msg,
+      id: id,
+      userId: opponentUserId,
+      opponentUserId: userId
     });
   });
 
