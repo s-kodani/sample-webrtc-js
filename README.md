@@ -2,7 +2,7 @@
 A Sample app for WebRTC on js using socket.io
 
 - Node.js
-- Express.js
+- Express
 - Socket.io
 - Docker Compose
 
