@@ -22,7 +22,7 @@ Then, access bellow URL on any Web Browser ( Such as Chrome ).
 http://localhost:3000
 ```
 
-To experience group chat, you may open above URL by multiple window or tab.
+To experience group chat, you may open the above URL in multiple window or tab.
 
 To stop this app, you can run bellow hotkey on the terminal window where this app is running.
 ```
