@@ -10,6 +10,8 @@
       <p id="user"></p>
     </div>
     <h2>投稿一覧</h2>
+    <div id="videos">
+    </div>
     <div>
       <ul id="messages"></ul>
     </div>
@@ -66,177 +68,148 @@
       // メッセージ投稿一覧の要素
       const messages = document.getElementById("messages");
 
+      // ビデオエリアの要素
+      const videos = document.getElementById("videos");
+
+      // オファー作成中
+      let makingOffer = false;
+
+      // Polite Peer かどうか
+      let polite = false;
+
+      // offerを無視するかどうか
+      let ignoreOffer = false;
+
       // Socketに新規ユーザが繋がると飛んでくるイベント
-      socket.on("join", (joinUserId) => {
+      socket.on("join", async (joinUserId) => {
+        // JoinしてきたタイミングでRTCPeerConnectionインスタンスを作成しておく。
+        const pc = new RTCPeerConnection(PEER_CONNECTION_CONFIG);
+        const dc = null;
+
+        const id = [userId, joinUserId].sort((a, b) => a > b ? 1 : -1).join("-");
+        peerConnections[id] = { pc, dc };
+
+        // RTCPeerConnectionのイベントハンドラセットアップ
+        setupRTCPeerConnection(id, joinUserId);
+
         // 新規ユーザーにコネクション開始のイベントを投げる
         socket.emit("start_connection", userId, joinUserId);
+
+        createStatusElement(id);
+
+        // ビデオ設定
+        try {
+          const videoElmId = `video-${userId}-self`;
+
+          const stream = await navigator.mediaDevices.getUserMedia({ "audio": false, "video": true });
+          if (!document.getElementById(videoElmId)) {
+            const videoElm = getVideoElm(videoElmId);
+            videoElm.srcObject = stream;
+          }
+          for (const track of stream.getTracks()) {
+            peerConnections[id].pc.addTrack(track, stream);
+          }
+        } catch (err) {
+          console.error(err);
+        }
       });
 
-      // 既存ユーザーがコネクション開始のイベントを受け取ったら、新規ユーザーとのWebRTC接続処理を開始する
+      // 新規ユーザーがコネクション開始のイベントを受け取ったら、既存ユーザーとのWebRTC接続処理を開始する
       socket.on("start_connection", (userId, opponentUserId) => {
-        const id = [userId, opponentUserId].sort((a, b) => a > b).join("-");
+        const id = [userId, opponentUserId].sort((a, b) => a > b ? 1 : -1).join("-");
 
-        // 既存の接続情報があれば一度閉じる
-        if (peerConnections.hasOwnProperty(id)) {
-          peerConnections[id].dc.close();
-          peerConnections[id].pc.close();
-        }
+        const pc = new RTCPeerConnection(PEER_CONNECTION_CONFIG);
+        const dc = null;
+        peerConnections[id] = { pc, dc };
+
+        // RTCPeerConnectionのイベントハンドラセットアップ
+        setupRTCPeerConnection(id, opponentUserId);
+
+        createStatusElement(id);
 
         // ピア接続開始
+        polite = true;
         startPeerConnection(id, opponentUserId);
       });
 
       // Offer SDP 受信時の処理
-      socket.on("offer_sdp", (msg) => {
+      socket.on("offer_sdp", async (msg) => {
         console.log("Received Offer:", msg.id);
         const id = msg.id;
 
-        // Offer SDP を受信したら、新規にRTCPeerConnectionインスタンスを生成するが、
-        // 既存のものがあればcloseしておく
-        if (peerConnections.hasOwnProperty(id)) {
-          peerConnections[id].dc.close();
-          peerConnections[id].pc.close();
+        const offerCollision =  makingOffer || peerConnections[id].pc.signalingState !== "stable";
+        ignoreOffer = !polite && offerCollision;
+        if (ignoreOffer) {
+          return;
         }
-
-        // 新規にRTCPeerConnectionインスタンスを生成
-        // Data Channelは後で設定するのでここではnullとしておく
-        peerConnections[id] = {
-          pc: createPeerConnection(id, msg.opponentUserId),
-          dc: null,
-        };
 
         // 受信した Offer は setRemoteDescription()する
         const offer = new RTCSessionDescription({
           type: "offer",
           sdp: msg.data,
         });
-        peerConnections[id].pc
-          .setRemoteDescription(offer)
-          .then(function () {
-            console.log("setRemoteDescription() succeeded.");
-          })
-          .catch(function (err) {
-            console.error("setRemoteDescription() failed.", err);
-          });
+        
+        try {
+          await peerConnections[id].pc.setRemoteDescription(offer);
+          console.log("setRemoteDescription() succeeded.");
+        } catch (err) {
+          console.error("setRemoteDescription() failed.", err);
+          throw err;
+        }
 
-          // Answer を生成して setLocalDescription() する
-        peerConnections[id].pc
-          .createAnswer()
-          .then(function (sessionDescription) {
-            console.log("createAnswer() succeeded.");
-            return peerConnections[id].pc.setLocalDescription(
-              sessionDescription
-            );
-          })
-          .then(function () {
-            // setLocalDescription() が成功した場合
-            // Trickle ICE ではここで SDP を相手に通知する
-            socket.emit(
-              "answer_sdp",
-              peerConnections[id].pc.localDescription.sdp,
-              id,
-              msg.userId,
-              msg.opponentUserId
-            );
-            console.log("setLocalDescription() succeeded.");
-          })
-          .catch(function (err) {
-            console.error("setLocalDescription() failed.", err);
-          });
-        document.getElementById(id).textContent = "answer created: " + id;
+        // Answer を生成して setLocalDescription() する
+        try {
+          await peerConnections[id].pc.setLocalDescription();
+          console.log("setLocalDescription() succeeded.");
+  
+          // setLocalDescription() が成功した場合
+          // Trickle ICE ではここで SDP を相手に通知する
+          socket.emit(
+            "answer_sdp",
+            peerConnections[id].pc.localDescription.sdp,
+            id,
+            msg.userId,
+            msg.opponentUserId
+          );
+        } catch (err) {
+          console.error("setLocalDescription() failed.", err);
+          throw err;
+        }
       });
 
       // Answer SDP 受信時の処理
-      socket.on("answer_sdp", (msg) => {
+      socket.on("answer_sdp", async (msg) => {
         console.log("Received Answer:", msg.id);
 
         const id = msg.id;
-
         const answer = new RTCSessionDescription({
           type: "answer",
           sdp: msg.data,
         });
-        peerConnections[id].pc
-          .setRemoteDescription(answer)
-          .then(function () {
-            console.log("setRemoteDescription() succeeded.");
-          })
-          .catch(function (err) {
-            console.error("setRemoteDescription() failed.", err);
-          });
+        
+        try {
+          await peerConnections[id].pc.setRemoteDescription(answer);
+          console.log("setRemoteDescription() succeeded.");
+        } catch (err) {
+          console.error("setRemoteDescription() failed.", err);
+          throw err;
+        }
       });
 
-      socket.on("ice_candidate", (msg) => {
+      socket.on("ice_candidate", async (msg) => {
         console.log("Received Ice Candidate:", msg.id);
 
-        const id = msg.id;
-
-        peerConnections[id].pc.addIceCandidate(msg.data);
-      });
-
-      function createPeerConnection(id, opponentUserId) {
-        if (!document.getElementById(id)) {
-          const item = document.createElement("li");
-          item.id = id;
-          document.getElementById("status").appendChild(item);
+        try {
+          const id = msg.id;
+          await peerConnections[id].pc.addIceCandidate(msg.data);
+          console.log("addIceCandidate() succeeded.");
+        } catch (err) {
+          if (!ignoreOffer) {
+            console.log("addIceCandidate() failed.");
+            throw err;
+          }
         }
-
-        let pc = new RTCPeerConnection(PEER_CONNECTION_CONFIG);
-
-        // ICE candidate 取得時のイベントハンドラを登録
-        pc.onicecandidate = function (evt) {
-          if (evt.candidate) {
-            // 一部の ICE candidate を取得
-            // Trickle ICE では ICE candidate を相手に通知する
-            socket.emit(
-              "ice_candidate",
-              evt.candidate,
-              id,
-              userId,
-              opponentUserId
-            );
-
-            console.log("Collecting ICE candidates");
-            document.getElementById(id).textContent =
-              "Collecting ICE candidates: " + id;
-          } else {
-            document.getElementById(id).textContent = "ready: " + id;
-          }
-        };
-
-        pc.onconnectionstatechange = function (evt) {
-          console.log(pc.connectionState, id);
-
-          switch (pc.connectionState) {
-            case "connected":
-              document.getElementById(id).textContent = "connected: " + id;
-              break;
-            case "disconnected":
-            case "failed":
-              if (document.getElementById(id)) {
-                document.getElementById(id).textContent = "disconnected: " + id;
-                document.getElementById(id).remove();
-              }
-              delete peerConnections[id];
-              break;
-            case "closed":
-              if (document.getElementById(id)) {
-                document.getElementById(id).textContent = "closed: " + id;
-                document.getElementById(id).remove();
-              }
-              delete peerConnections[id];
-              break;
-          }
-        };
-
-        pc.ondatachannel = function (evt) {
-          console.log("Data channel created:", evt);
-          setupDataChannel(evt.channel, id);
-          peerConnections[id].dc = evt.channel;
-        };
-
-        return pc;
-      }
+      });
 
       form.addEventListener("submit", (e) => {
         e.preventDefault();
@@ -272,59 +245,137 @@
         input.value = "";
       });
 
-      function startPeerConnection(id, opponentUserId) {
+      async function startPeerConnection(id, opponentUserId) {
         console.log("startPeerConnection:", id);
-        peerConnections[id] = {
-          pc: null,
-          dc: null,
-        };
-
-        const peerConnection = createPeerConnection(id, opponentUserId);
 
         // Data channel を生成
-        const dataChannel = peerConnection.createDataChannel(
+        const dataChannel = peerConnections[id].pc.createDataChannel(
           "test-data-channel",
           DATA_CHANNEL_OPTIONS
         );
+        // Data channel のイベントハンドラをセットアップ
         setupDataChannel(dataChannel, id);
+        peerConnections[id].dc = dataChannel;
 
-        // Offer を生成する
-        peerConnection
-          .createOffer()
-          .then(function (sessionDescription) {
-            console.log("createOffer() succeeded.");
+        // ビデオ設定
+        try {
+          const videoElmId = `video-${userId}-self`;
+          const stream = await navigator.mediaDevices.getUserMedia({ "audio": false, "video": true });
 
-            return peerConnection.setLocalDescription(sessionDescription);
-          })
-          .then(function () {
-            // setLocalDescription() が成功した場合
-            // Trickle ICE ではここで SDP を相手に通知する
+          if (!document.getElementById(videoElmId)) {
+            const videoElm = getVideoElm(videoElmId);
+            videoElm.srcObject = stream;
+          }
+          for (const track of stream.getTracks()) {
+            peerConnections[id].pc.addTrack(track, stream);
+          }
+        } catch (err) {
+          console.error(err);
+        }
+      }
+
+      function setupRTCPeerConnection(id, opponentUserId) {
+        const pc = peerConnections[id].pc;
+
+        pc.onnegotiationneeded =　async function (evt) {
+          console.log("Negotiation needed:", evt);
+          
+          // オファー作成中フラグをONに
+          makingOffer = true;
+
+          try {
+            await peerConnections[id].pc.setLocalDescription();
             socket.emit(
               "offer_sdp",
-              peerConnection.localDescription.sdp,
+              peerConnections[id].pc.localDescription.sdp,
+              id,
+              userId,
+              opponentUserId
+            );
+            console.log("setLocalDescription() succeeded.");
+          } catch (err) {
+            console.error("setLocalDescription() failed.", err);
+          } finally {
+            makingOffer = false;
+          }
+        }
+
+        // ICE candidate 取得時のイベントハンドラを登録
+        pc.onicecandidate = function (evt) {
+          if (evt.candidate) {
+            // 一部の ICE candidate を取得
+            // Trickle ICE では ICE candidate を相手に通知する
+            socket.emit(
+              "ice_candidate",
+              evt.candidate,
               id,
               userId,
               opponentUserId
             );
 
-            console.log("setLocalDescription() succeeded.");
-          })
-          .catch(function (err) {
-            console.error("setLocalDescription() failed.", err);
-          });
-
-        document.getElementById(id).textContent = "offer created: " + id;
-
-        peerConnections[id] = {
-          pc: peerConnection,
-          dc: dataChannel,
+            console.log("Collecting ICE candidates");
+          }
         };
+
+        pc.onconnectionstatechange = function (evt) {
+          console.log("connectionState:", pc.connectionState, id);
+
+          switch (pc.connectionState) {
+            case "connected":
+              document.getElementById(id).textContent = "connected: " + id;
+              break;
+            case "disconnected":
+            case "failed":
+              if (document.getElementById(id)) {
+                document.getElementById(id).textContent = "disconnected: " + id;
+                const videoElmId = `video-${id}`;
+                closeStream(videoElmId);
+                closePeer(id);
+              }
+              break;
+            case "closed":
+              if (document.getElementById(id)) {
+                document.getElementById(id).textContent = "closed: " + id;
+                document.getElementById(id).remove();
+              }
+              delete peerConnections[id];
+              break;
+          }
+        };
+
+        pc.oniceconnectionstatechange = function () {
+          console.log("iceConnectionState:", peerConnections[id].pc.iceConnectionState, id);
+          if (peerConnections[id].pc.iceConnectionState === "failed") {
+            peerConnections[id].pc.restartIce();
+          }
+        }
+
+        pc.ondatachannel = function (evt) {
+          console.log("Data channel created:", evt);
+          setupDataChannel(evt.channel, id);
+          peerConnections[id].dc = evt.channel;
+        };
+
+        // 相手からのトラック
+        pc.ontrack = function (evt) {
+          console.log('Track Received', evt.streams[0]);
+
+          const videoElmId = `video-${id}`;
+          const videoElm = getVideoElm(videoElmId);
+          if (evt.streams && evt.streams[0]) {
+            videoElm.srcObject = evt.streams[0];
+          } else {
+            const inboundStream = new MediaStream();
+            inboundStream.addTrack(evt.track);
+            videoElm.srcObject = inboundStream;
+          }
+        }
       }
 
       // Data channel のイベントハンドラを定義する
       function setupDataChannel(dc, id) {
         dc.onerror = function (error) {
-          console.log("Data channel error:", error);
+          console.error("Data channel error:", error);
         };
         dc.onmessage = function (evt) {
           console.log("Data channel message:", evt.data);
@@ -342,6 +393,55 @@
         dc.onclose = function () {
           console.log("Data channel closed.");
         };
+      }
+
+      function closePeer(id) {
+        if (peerConnections.hasOwnProperty(id)) {
+          if (peerConnections[id].dc) {
+            peerConnections[id].dc.close(); 
+          }
+          if (peerConnections[id].pc) {
+            peerConnections[id].pc.close();
+          }
+
+          peerConnections[id].dc = null;
+          peerConnections[id].pc = null;
+          delete peerConnections[id];
+        }
+      }
+
+      function createStatusElement(id) {
+        if (!document.getElementById(id)) {
+          const item = document.createElement("li");
+          item.id = id;
+          document.getElementById("status").appendChild(item);
+        }
+      }
+
+      function getVideoElm (videoElmId) {
+        let videoElm = document.getElementById(videoElmId);
+        if (!videoElm) {
+          videoElm = document.createElement("video");
+          videoElm.id = videoElmId;
+          videoElm.setAttribute('muted', '');
+          videoElm.setAttribute('autoplay', '');
+          videoElm.setAttribute('playsinline', '');
+          videoElm.setAttribute('width', '250');
+          videos.appendChild(videoElm);
+        }
+
+        return videoElm;
+      }
+
+      function closeStream(videoElmId) {
+        const videoElm = document.getElementById(videoElmId);
+
+        if (videoElm) {
+          videoElm.srcObject.getTracks().forEach((track) => track.stop());
+        }
+
+        videoElm.remove();
+
       }
     </script>
   </body>

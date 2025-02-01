@@ -11,8 +11,8 @@ A Sample app for WebRTC on js using socket.io
 - Automatically enter a room ( When you open the root page of this app )
 - Use Trickle ICE for checking connectivity using TURN servers
 
-## Setup
-To run this app, you can run bellow command.
+## Setup (On local machine)
+To let this app run, you can run bellow command.
 ```
 docker compose up
 ```
@@ -30,4 +30,11 @@ Ctrl + C
 ```
 
 ## TODO
-- Add how to get MediaStream and attach it to RTCPeerConnection.
+- [x] Revise flow to get MediaStream and attach it to RTCPeerConnection.
+- [ ] Add and remove tracks during in connection.
+
+# Ref
+- [RTCPeerConnection](https://developer.mozilla.org/en-US/docs/Web/API/RTCPeerConnection)
+- [Establishing a connection: The WebRTC perfect negotiation pattern](https://developer.mozilla.org/en-US/docs/Web/API/WebRTC_API/Perfect_negotiation)
+- [Signaling and video calling](https://developer.mozilla.org/en-US/docs/Web/API/WebRTC_API/Signaling_and_video_calling)
+
